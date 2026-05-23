@@ -1,0 +1,22 @@
+-- 0004_revoke_has_role_execute.sql
+-- Tighten has_role(): revoke direct EXECUTE from PUBLIC, anon, and
+-- authenticated. The function still works inside RLS policies because
+-- policy execution runs under definer privileges and doesn't require
+-- the caller to have EXECUTE.
+--
+-- Why: a signed-in user could otherwise call has_role(uuid, app_role)
+-- directly via PostgREST and probe role membership of any user.
+-- Not a data leak per se (it returns a boolean), but unnecessary
+-- surface area and confusing for anyone reading the schema later.
+--
+-- Surfaced by the Supabase linter during the 0003 enum-split work,
+-- fixed in the same window. Pre-existing issue from migration 0002 —
+-- the original CREATE FUNCTION didn't include a REVOKE, so the default
+-- grants (EXECUTE TO PUBLIC on functions) applied.
+--
+-- Do NOT switch this function to SECURITY INVOKER as a "fix" — that
+-- would force RLS recursion (the policy on user_roles would call
+-- has_role(), which would need to query user_roles, which would
+-- invoke the policy, etc.). SECURITY DEFINER is load-bearing.
+
+REVOKE EXECUTE ON FUNCTION public.has_role(uuid, public.app_role) FROM PUBLIC, anon, authenticated;
