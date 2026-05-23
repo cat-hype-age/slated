@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,6 +11,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { supabase } from "@/integrations/supabase/client";
+import { AddIcalDialog } from "@/components/AddIcalDialog";
+import { ScheduleView } from "@/components/ScheduleView";
 
 const getFirstName = (meta: Record<string, any> | undefined, email: string | undefined) => {
   const full = meta?.full_name || meta?.name || meta?.given_name;
@@ -21,10 +24,28 @@ const getFirstName = (meta: Record<string, any> | undefined, email: string | und
 
 const Dashboard = () => {
   const { user, signOut } = useAuth();
+  const [hasSubscription, setHasSubscription] = useState<boolean | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     document.title = "Dashboard — Slated";
   }, []);
+
+  const checkSubscriptions = useCallback(async () => {
+    if (!user) return;
+    const { count } = await supabase
+      .from("source_subscriptions")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id);
+    setHasSubscription((count ?? 0) > 0);
+  }, [user]);
+
+  useEffect(() => { checkSubscriptions(); }, [checkSubscriptions]);
+
+  const onConnected = () => {
+    setHasSubscription(true);
+    setRefreshKey((k) => k + 1);
+  };
 
   const meta = user?.user_metadata as Record<string, any> | undefined;
   const firstName = getFirstName(meta, user?.email);
@@ -57,19 +78,38 @@ const Dashboard = () => {
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Welcome, {firstName}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Your schedule will appear here.</p>
+      <main className="mx-auto max-w-3xl px-4 py-6">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Welcome, {firstName}</h1>
+            <p className="mt-1 text-sm text-muted-foreground">Your schedule.</p>
+          </div>
+          {hasSubscription && (
+            <AddIcalDialog
+              trigger={<Button variant="outline" size="sm">Add source</Button>}
+              onConnected={onConnected}
+            />
+          )}
+        </div>
 
-        <Card className="mt-6">
-          <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
-            <h2 className="text-lg font-medium">No events yet</h2>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              Connect your sources to start.
-            </p>
-            <Button disabled className="mt-2">Add iCal URL</Button>
-          </CardContent>
-        </Card>
+        <div className="mt-6">
+          {hasSubscription === null ? null : hasSubscription ? (
+            <ScheduleView refreshKey={refreshKey} />
+          ) : (
+            <Card>
+              <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+                <h2 className="text-lg font-medium">No events yet</h2>
+                <p className="max-w-sm text-sm text-muted-foreground">
+                  Connect your sources to start.
+                </p>
+                <AddIcalDialog
+                  trigger={<Button className="mt-2">Add iCal URL</Button>}
+                  onConnected={onConnected}
+                />
+              </CardContent>
+            </Card>
+          )}
+        </div>
       </main>
     </div>
   );
