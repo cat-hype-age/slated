@@ -14,6 +14,9 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { AddIcalDialog } from "@/components/AddIcalDialog";
 import { ScheduleView } from "@/components/ScheduleView";
+import { RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 
 const getFirstName = (meta: Record<string, any> | undefined, email: string | undefined) => {
   const full = meta?.full_name || meta?.name || meta?.given_name;
@@ -26,6 +29,7 @@ const Dashboard = () => {
   const { user, signOut } = useAuth();
   const [hasSubscription, setHasSubscription] = useState<boolean | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     document.title = "Dashboard — Slated";
@@ -45,6 +49,29 @@ const Dashboard = () => {
   const onConnected = () => {
     setHasSubscription(true);
     setRefreshKey((k) => k + 1);
+  };
+
+  const handleRefresh = async () => {
+    if (!user || refreshing) return;
+    setRefreshing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke(
+        "poll-partiful-ical",
+        { body: { user_id: user.id } },
+      );
+      if (error) throw error;
+      const first = (data as { results?: Array<{ ok: boolean; error?: string; processed?: number }> })?.results?.[0];
+      if (first && !first.ok) {
+        toast.error(`Refresh failed: ${first.error}`);
+      } else {
+        toast.success(`Synced ${first?.processed ?? 0} events`);
+        setRefreshKey((k) => k + 1);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Refresh failed");
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const meta = user?.user_metadata as Record<string, any> | undefined;
@@ -85,10 +112,22 @@ const Dashboard = () => {
             <p className="mt-1 text-sm text-muted-foreground">Your schedule.</p>
           </div>
           {hasSubscription && (
-            <AddIcalDialog
-              trigger={<Button variant="outline" size="sm">Add source</Button>}
-              onConnected={onConnected}
-            />
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={handleRefresh}
+                disabled={refreshing}
+                aria-label="Refresh schedule"
+                title="Refresh"
+              >
+                <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+              </Button>
+              <AddIcalDialog
+                trigger={<Button variant="outline" size="sm">Add source</Button>}
+                onConnected={onConnected}
+              />
+            </div>
           )}
         </div>
 
