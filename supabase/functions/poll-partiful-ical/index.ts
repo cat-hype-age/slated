@@ -77,9 +77,12 @@ function classify(summary: string, location: string): { status: Status; method: 
     return { status: "pending", method: "ical_pending_tag", gated };
   }
   if (gated) {
-    return { status: "waitlist", method: "ical_location_reveal", gated: true };
+    // Strong signal: the gated string is still present → user hasn't been approved yet.
+    return { status: "waitlist", method: "ical_location_revealed", gated: true };
   }
-  return { status: "approved", method: "ical_location_reveal", gated: false };
+  // Weak signal: location is just visible. Could be a public-by-default event the
+  // user was never actually approved to. Worth a softer confidence indicator in UI.
+  return { status: "approved", method: "ical_location_public", gated: false };
 }
 
 function cleanTitle(summary: string): string {
