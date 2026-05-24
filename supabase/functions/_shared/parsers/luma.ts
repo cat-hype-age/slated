@@ -54,7 +54,11 @@ const IGNORE_PATTERNS: RegExp[] = [
 //   https://lu.ma/abc123                 (short domain)
 //   https://luma.com/e/evt-xyz789        (event ID form)
 //   https://luma.com/abc123?pk=foo       (with tracking params — we ignore them)
-const LUMA_EVENT_URL = /https?:\/\/(?:luma\.com|lu\.ma)\/(?:e\/)?([A-Za-z0-9_-]+)/;
+//
+// Slug requires ≥4 chars to skip asset paths like /i/<image>, /u/<user>,
+// /a/<avatar> that appear earlier in the body. JS regex backtracks past the
+// failed asset URL and finds the real event link further down.
+const LUMA_EVENT_URL = /https?:\/\/(?:luma\.com|lu\.ma)\/(?:e\/)?([A-Za-z0-9_-]{4,})/;
 
 // Match the sender to Luma's known subdomains. Reject anything else outright —
 // guards against an impersonator with a similar subject line.

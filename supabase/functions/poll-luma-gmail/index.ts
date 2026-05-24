@@ -277,7 +277,19 @@ async function processCredential(
   );
 
   const now = new Date().toISOString();
-  const upsertRows = parsed.map((p) => {
+
+  // Dedupe within batch: multiple emails can map to the same Luma event
+  // (confirm + later waitlist update, etc). Gmail messages.list returns
+  // newest first, so the first occurrence per sourceEventId is the
+  // freshest signal — keep that one.
+  const seen = new Set<string>();
+  const deduped = parsed.filter((p) => {
+    if (seen.has(p.sourceEventId)) return false;
+    seen.add(p.sourceEventId);
+    return true;
+  });
+
+  const upsertRows = deduped.map((p) => {
     const isNew = !existingMap.has(p.sourceEventId);
     return {
       user_id: cred.user_id,
@@ -395,7 +407,9 @@ Deno.serve(async (req) => {
       const r = await processCredential(admin, cred);
       results.push({ user_id: cred.user_id, ok: true, processed: r.processed });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = e instanceof Error
+        ? e.message
+        : (e && typeof e === "object" ? JSON.stringify(e) : String(e));
       await admin
         .from("gmail_credentials")
         .update({

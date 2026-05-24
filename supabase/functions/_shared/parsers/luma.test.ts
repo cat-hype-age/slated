@@ -124,4 +124,20 @@ describe("parseLumaEmail", () => {
       ).toBeNull();
     });
   });
+
+  describe("asset URL false positives", () => {
+    // Regression: emails contain image URLs like https://luma.com/i/<file>
+    // before the event link. With an unbounded slug regex, that captured "i"
+    // as the sourceEventId, fragmenting one event across multiple rows.
+    it("skips /i/ image paths and picks the real event slug further down", () => {
+      const result = parseLumaEmail({
+        subject: "Registration confirmed for Solar Punk Futures",
+        from: "host@calendar.luma-mail.com",
+        bodyText:
+          "Banner: https://luma.com/i/banner-abc.png\n" +
+          "Event Page: https://luma.com/m3yfbo3v?pk=foo\n",
+      });
+      expect(result?.sourceEventId).toBe("m3yfbo3v");
+    });
+  });
 });
