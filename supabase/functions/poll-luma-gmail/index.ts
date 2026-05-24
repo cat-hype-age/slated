@@ -4,10 +4,12 @@
 //   1. Refresh the Google access token if expired
 //   2. List Gmail messages from luma-mail.com senders since last_polled_at
 //   3. For each new message: fetch headers + plaintext body, parse with the
-//      shared Luma parser, upsert into events, log event_status_history on
-//      status change
-//   4. Update last_polled_at + last_history_id; populate last_poll_error on
-//      failure
+//      shared Luma email parser. For each event the parser recognizes,
+//      enrich with public-page metadata (real start time, location, geo)
+//      via the JSON-LD scraper.
+//   4. Upsert into events; log event_status_history on status change.
+//   5. Update last_polled_at + last_history_id; populate last_poll_error on
+//      failure.
 //
 // Body: optional `{ user_id: string }` to scope to one user (for the
 // post-OAuth immediate first poll, and for the dashboard refresh button).
@@ -19,14 +21,14 @@
 //   GOOGLE_OAUTH_CLIENT_SECRET
 //   SUPABASE_URL                  (auto-injected)
 //   SUPABASE_SERVICE_ROLE_KEY     (auto-injected)
-//
-// End-to-end testing is blocked on Lovable agent's OAuth flow putting a real
-// row in gmail_credentials. Once that lands, invoke this function with the
-// test user's id and watch the events + event_status_history tables.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { parseLumaEmail, type LumaParsedEvent } from "../_shared/parsers/luma.ts";
+import {
+  fetchLumaEventMeta,
+  type LumaEventMeta,
+} from "../_shared/parsers/luma_page.ts";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://www.googleapis.com/gmail/v1/users/me";
@@ -131,8 +133,8 @@ async function listLumaMessages(
   sinceUnixSeconds: number,
 ): Promise<GmailMessageMeta[]> {
   // Gmail search query: from any luma-mail.com subdomain, after the given
-  // unix timestamp. Pagination kept simple (single page, max 500) — Luma
-  // sends a few emails per event so 500 covers many weeks of activity.
+  // unix timestamp. Pagination kept simple — Luma sends a few emails per
+  // event so 500 covers many weeks of activity.
   const q = `from:luma-mail.com after:${sinceUnixSeconds}`;
   const url = `${GMAIL_API_BASE}/messages?q=${encodeURIComponent(q)}&maxResults=500`;
 
@@ -207,6 +209,18 @@ function extractPlainText(part: GmailMessagePart | undefined): string {
   return "";
 }
 
+// Combine venue name + address into a single human-readable string for the
+// events.location column. If the venue name is already part of the address,
+// don't repeat it.
+function formatLocation(meta: LumaEventMeta | null): string | null {
+  if (!meta) return null;
+  if (!meta.locationName && !meta.locationAddress) return null;
+  if (!meta.locationName) return meta.locationAddress;
+  if (!meta.locationAddress) return meta.locationName;
+  if (meta.locationAddress.startsWith(meta.locationName)) return meta.locationAddress;
+  return `${meta.locationName}, ${meta.locationAddress}`;
+}
+
 // ----- Per-subscription processing -----
 
 async function processCredential(
@@ -233,7 +247,7 @@ async function processCredential(
     return { processed: 0 };
   }
 
-  // Fetch + parse each message
+  // Fetch + parse each Gmail message
   const parsed: Array<LumaParsedEvent & { raw: GmailMessage }> = [];
   for (const meta of messageMetas) {
     let msg: GmailMessage;
@@ -289,30 +303,40 @@ async function processCredential(
     return true;
   });
 
-  const upsertRows = deduped.map((p) => {
+  // Enrich with public-page metadata (real start times, locations, geo).
+  // Luma's email payload only carries title + status; the event page itself
+  // has JSON-LD with startDate/endDate/location/geo. One HTTP fetch per
+  // distinct event per poll, parallelized. If a fetch fails, we fall back
+  // to the now() placeholder for starts_at and null for the rest — the
+  // event still lands in the schedule, just sorts by ingest time and shows
+  // no venue.
+  const enriched = await Promise.all(
+    deduped.map(async (p) => ({
+      ...p,
+      meta: await fetchLumaEventMeta(p.sourceEventId),
+    })),
+  );
+
+  const upsertRows = enriched.map((p) => {
     const isNew = !existingMap.has(p.sourceEventId);
     return {
       user_id: cred.user_id,
       source_type: "luma",
       source_event_id: p.sourceEventId,
       title: p.title,
-      // Luma's structured event data (start time, location) isn't in the
-      // subject/from. For MVP we leave starts_at NULL-able-via-default and
-      // rely on the user opening the event link to see details. Future:
-      // parse the email body for date/time block, or call Luma's public
-      // event API by slug.
-      // For now use the message's internalDate as starts_at placeholder
-      // so it sorts somewhere — caveat: that's the email arrival time, not
-      // the event time. Will revisit.
-      starts_at: now,
-      ends_at: null,
-      location: null,
+      starts_at: p.meta?.startsAt ?? now,
+      ends_at: p.meta?.endsAt ?? null,
+      location: formatLocation(p.meta),
       location_is_gated: false,
       url: `https://luma.com/${p.sourceEventId}`,
       status: p.status,
       status_is_inferred: false, // Luma email is direct
       status_detection_method: isNew ? "initial_import" : p.detectedVia,
-      raw_data: { message_id: p.raw.id, thread_id: p.raw.threadId },
+      raw_data: {
+        message_id: p.raw.id,
+        thread_id: p.raw.threadId,
+        page_meta: p.meta, // null if scrape failed; useful for debugging
+      },
       last_seen_at: now,
     };
   });
@@ -323,7 +347,7 @@ async function processCredential(
   if (upsertErr) throw upsertErr;
 
   // History on status change
-  const changed = parsed.filter((p) => {
+  const changed = enriched.filter((p) => {
     const prev = existingMap.get(p.sourceEventId);
     return prev !== undefined && prev !== p.status;
   });
@@ -365,7 +389,7 @@ async function processCredential(
     })
     .eq("id", cred.id);
 
-  return { processed: parsed.length };
+  return { processed: enriched.length };
 }
 
 // ----- HTTP handler -----
