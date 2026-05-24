@@ -11,7 +11,7 @@ events to RSVP to, not yet on your calendar).
 | AI + Infra | `ai-infra.json` | ~47 | |
 | Hackathons | `hackathons.json` | 32 | |
 | Fintech | `fintech.json` | 26 | |
-| Founders | `founders.json` | ~44 | **Partial** — WebFetch truncated at Wed AM; later days missing |
+| Founders | `founders.json` | 44 | Concentrated Mon-Wed (verified against page HTML — 40 unique Partiful URLs + 4 invite-only); not actually truncated, just front-loaded in the week |
 | Investors | `investors.json` | 38 | |
 | Engineers | `engineers.json` | ~47 | |
 | GTM | `gtm.json` | 23 | |
@@ -61,10 +61,11 @@ this scrape into a daily cron so the discovery surface stays current.
 
 ## Caveats worth knowing
 
-- **Founders track was truncated** — WebFetch returned only Mon-Wed AM. A
-  fresh fetch with a tighter "list ALL of Thu/Fri/Sat events too" prompt
-  would complete it. Filed as a follow-up.
 - **No event descriptions** — only what's visible on the catalog card
   (title/time/location/host). Full descriptions live on the RSVP page;
   we'd need to fetch those individually if the UI wants them.
-- **No reliable event ID** — we'll dedupe by `rsvp_url` going forward.
+- **No reliable event ID** — we dedupe by `rsvp_url`. Events without
+  a URL (4 "Invite Only" rows in Founders) get deduped by `title`.
+- **Founders is front-loaded** — 44 events, almost all Mon-Wed. Initially
+  flagged as "truncated" but verified against the raw HTML's 40 unique
+  Partiful URLs (+ 4 invite-only); the count matches. Not a scrape gap.
